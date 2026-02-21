@@ -1,44 +1,64 @@
-﻿name: CI Pipeline
+﻿name: CI
 
 on:
   push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
 
 jobs:
-  lint-and-validate:
+  validate:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+      - name: Validate docker compose config
+        run: |
+          docker compose -f docker-compose.yml config
 
-    - name: Install dependencies
-      run: |
-        pip install flake8 black
-        pip install -r requirements.txt
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Lint Python with flake8
-      run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Install lightweight deps (no Airflow)
+        run: |
+          python -m pip install --upgrade pip
+          pip install duckdb redis kafka-python
 
-    - name: Lint SQL with sqlfluff
-      run: |
-        pip install sqlfluff
-        sqlfluff lint dbt/models/ --dialect bigquery
+      - name: Syntax check DAG
+        run: |
+          python -m py_compile airflow/dags/recommendation_dag.py
 
-    - name: Terraform Init
-      run: |
-        cd terraform
-        terraform init
+      - name: Import DAG with Airflow stubs
+        run: |
+          python - <<'PY'
+          import sys, types, importlib.util
 
-    - name: Terraform Plan
-      run: |
-        cd terraform
-        terraform plan -var-file="variables.tfvars"
-      env:
-        GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+          # ---- create minimal "airflow" stubs so the DAG can import ----
+          airflow = types.ModuleType("airflow")
+          operators = types.ModuleType("airflow.operators")
+          python_ops = types.ModuleType("airflow.operators.python")
+
+          class DAG:
+              def __init__(self, *args, **kwargs): pass
+              def __enter__(self): return self
+              def __exit__(self, exc_type, exc, tb): return False
+
+          class PythonOperator:
+              def __init__(self, *args, **kwargs): pass
+              def __rshift__(self, other): return other
+
+          airflow.DAG = DAG
+          python_ops.PythonOperator = PythonOperator
+
+          sys.modules["airflow"] = airflow
+          sys.modules["airflow.operators"] = operators
+          sys.modules["airflow.operators.python"] = python_ops
+
+          # ---- import your DAG file ----
+          p = "airflow/dags/recommendation_dag.py"
+          spec = importlib.util.spec_from_file_location("recommendation_dag", p)
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          print("DAG import OK (with stubs):", p)
+          PY
