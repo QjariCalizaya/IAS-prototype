@@ -1,0 +1,35 @@
+﻿name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate docker compose config
+        run: |
+          docker compose -f docker-compose.yml config
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install Python deps for DAG import
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            apache-airflow==2.7.1 \
+            duckdb==1.4.4 \
+            redis==5.0.0 \
+            kafka-python==2.3.0
+
+      - name: Validate DAG can be imported
+        run: |
+          python -c "import importlib.util; p='airflow/dags/recommendation_dag.py'; spec=importlib.util.spec_from_file_location('dag', p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('DAG import OK:', p)"
